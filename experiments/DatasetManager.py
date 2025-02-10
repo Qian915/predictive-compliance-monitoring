@@ -137,8 +137,7 @@ class DatasetManager:
         return case_ids
     
     def get_class_label(self, data):
-        y = self.get_label(data) #for xgboost!  #TODO for grounded prefixes used in 3d lstm model!
-        #y = data[self.label_col]    # for lstm!
+        y = self.get_label(data) 
         return [1 if label == self.pos_label else 0 for label in y]   # numeric label (0, 1) for binary classes
     
     def get_regression_label(self, data):

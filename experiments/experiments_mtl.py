@@ -131,10 +131,10 @@ for dataset_name in datasets:
         bucketer = BucketFactory.get_bucketer(bucket_method, **bucketer_args)
 
         start_offline_time_bucket = time.time()
-        bucket_assignments_train = bucketer.fit_predict(dt_train_prefixes)  # train the bucketer and assign a bucket to each case: [bucket1, bucket3,...]
+        bucket_assignments_train = bucketer.fit_predict(dt_train_prefixes)  
         offline_time_bucket = time.time() - start_offline_time_bucket
 
-        bucket_assignments_test = bucketer.predict(dt_test_prefixes)    # assign a bucket to each case in the test set based on the trained bucketer
+        bucket_assignments_test = bucketer.predict(dt_test_prefixes)    
 
         pred_y_class = []
         pred_y_reg = []
@@ -143,7 +143,6 @@ for dataset_name in datasets:
         nr_events_all = []
         offline_time_fit = 0
         current_online_event_times = []
-        #print(f'iteration {ii}: #buckets in test set: {len(set(bucket_assignments_test))}')
         for bucket in set(bucket_assignments_test):
             if bucket_method == "prefix":
                 current_args = args[bucket]
@@ -159,13 +158,13 @@ for dataset_name in datasets:
                 current_online_event_times.extend([0] * len(preds))
             else:
                 dt_train_bucket = dataset_manager.get_relevant_data_by_indexes(dt_train_prefixes, relevant_train_cases_bucket) # one row per event
-                train_y_class = dataset_manager.get_class_label(dt_train_bucket)   #TODO for classification 
-                train_y_values = dataset_manager.get_regression_label(dt_train_bucket)   #TODO for regression
+                train_y_class = dataset_manager.get_class_label(dt_train_bucket)   
+                train_y_values = dataset_manager.get_regression_label(dt_train_bucket)   
                 # scale train_y within [0, 1]
                 y_scaler = MinMaxScaler()
                 train_y_reg = y_scaler.fit_transform(train_y_values.to_numpy().reshape(-1, 1)).ravel()  # normalization for regression task
                 # Combine labels into a single dataset for MTL
-                train_y_mtl = np.column_stack((train_y_class, train_y_reg))     #TODO combine outputs for multi-task learning
+                train_y_mtl = np.column_stack((train_y_class, train_y_reg))     # combine outputs for multi-task learning
 
                 if len(set(train_y_class)) < 2:
                     preds = [train_y_class[0]] * len(relevant_test_cases_bucket)
@@ -173,9 +172,9 @@ for dataset_name in datasets:
                     pred_y_reg.extend(preds)
                     current_online_event_times.extend([0] * len(preds))
                     test_y_class.extend(dataset_manager.get_class_label(dt_test_bucket))
-                    test_y_values.extend(dataset_manager.get_regression_label(dt_test_bucket)) #TODO for regression
+                    test_y_values.extend(dataset_manager.get_regression_label(dt_test_bucket)) 
                 else:
-                    start_offline_time_fit = time.time()    # [(static, static_encoder, state, state_encoder)] for case and dynamic attributes
+                    start_offline_time_fit = time.time()    
                     feature_combiner = FeatureUnion([(method, EncoderFactory.get_encoder(method, **cls_encoder_args)) for method in methods])
 
                     if cls_method == "rf":
@@ -206,8 +205,8 @@ for dataset_name in datasets:
                             combined_loss = np.mean(class_loss) + np.mean(reg_loss)
                             return 'mtl_loss', combined_loss
                         
-                        cls = xgb.XGBRegressor(objective='reg:logistic',  #TODO Use logistic regression for classification
-                                                eval_metric=custom_mtl_loss,  #TODO Custom loss function for MTL
+                        cls = xgb.XGBRegressor(objective='reg:logistic',  
+                                                eval_metric=custom_mtl_loss,  # Custom loss function for MTL
                                                 n_estimators=500,
                                                 learning_rate= current_args['learning_rate'],
                                                 subsample=current_args['subsample'],
@@ -230,7 +229,7 @@ for dataset_name in datasets:
                     else:
                         pipeline = Pipeline([('encoder', feature_combiner), ('scaler', StandardScaler()), ('cls', cls)])
 
-                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  #TODO prepare input features for model training
+                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  
                     pipeline.fit(train_x, train_y_mtl)
                     offline_time_fit += time.time() - start_offline_time_fit
 
@@ -242,7 +241,7 @@ for dataset_name in datasets:
                             
                         start = time.time()
                         _ = bucketer.predict(group)
-                        test_x = group.drop(columns=["label", "magnitude"])  #TODO prepare input features for prediction
+                        test_x = group.drop(columns=["label", "magnitude"])  
                         if cls_method == "svm":
                             pred = pipeline.decision_function(test_x)
                         else:
@@ -257,61 +256,18 @@ for dataset_name in datasets:
             pred_y_class = np.array(pred_y_class)
             pred_y_class = (pred_y_class > 0.5).astype(int)  # convert the regression output to binary class predictions
             pred_y_class = pred_y_class.tolist()
-        pred_y_reg = np.clip(pred_y_reg, 0, 1)      #TODO clip predicted normalized values within [0,1]
-        pred_y_values = y_scaler.inverse_transform(np.array(pred_y_reg).reshape(-1, 1)).ravel()   # TODO inverse transformation: return original value
+        pred_y_reg = np.clip(pred_y_reg, 0, 1)      # clip predicted normalized values within [0,1]
+        pred_y_values = y_scaler.inverse_transform(np.array(pred_y_reg).reshape(-1, 1)).ravel()   # inverse transformation: return original value
         offline_total_time = offline_time_bucket + offline_time_fit + train_prefix_generation_time
         offline_total_times.append(offline_total_time)
         online_event_times.append(current_online_event_times)
 
         
-    with open(outfile, 'w') as fout:
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%("dataset", "method", "cls", "nr_events", "n_iter", "metric", "score"))
+    dt_results = pd.DataFrame({"actual_values": test_y_values, "actual": test_y_class, "predicted": pred_y_class, "pred_values": pred_y_values, "nr_events": nr_events_all})
+    overall_auc = roc_auc_score(dt_results.actual, dt_results.predicted)
+    overall_mae = mean_absolute_error(dt_results.actual_values, dt_results.pred_values)/1440  # mae in days
+    baseline_mae_mean = mean_absolute_error(dt_results.actual_values, [np.mean(dt_results.actual_values)]*len(dt_results.actual_values))/1440  # mae in days
 
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "test_prefix_generation_time", test_prefix_generation_time))
-
-        for ii in range(len(offline_total_times)):
-            fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, ii, "train_prefix_generation_time", train_prefix_generation_times[ii]))
-            fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, ii, "offline_time_total", offline_total_times[ii]))
-            fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, ii, "online_time_avg", np.mean(online_event_times[ii])))
-            fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, ii, "online_time_std", np.std(online_event_times[ii])))
-
-        dt_results = pd.DataFrame({"actual_values": test_y_values, "actual": test_y_class, "predicted": pred_y_class, "pred_values": pred_y_values, "nr_events": nr_events_all})
-        dt_results.to_csv(f'truth_prediction/{dataset_name}_mtl.csv', index=False)
-
-        for nr_events, group in dt_results.groupby("nr_events"):
-            if len(set(group.actual)) < 2:
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, nr_events, -1, "auc", np.nan))
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, nr_events, -1, "mae", np.nan))
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "baseline_mae_mean", np.nan))
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "baseline_mae_median", np.nan))
-            else:
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, nr_events, -1, "auc", roc_auc_score(group.actual, group.predicted)))   
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, nr_events, -1, "mae", mean_absolute_error(group.actual_values, group.pred_values)/1440))
-                baseline_mae_mean = mean_absolute_error(group.actual_values, [np.mean(group.actual_values)]*len(group.actual_values))/1440  # mae in days
-                baseline_mae_median = mean_absolute_error(group.actual_values, [np.median(group.actual_values)]*len(group.actual_values))/1440  # mae in days
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "baseline_mae_mean", baseline_mae_mean))
-                fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "baseline_mae_median", baseline_mae_median))
-
-        overall_auc = roc_auc_score(dt_results.actual, dt_results.predicted)
-        overall_f1 = f1_score(dt_results.actual, dt_results.predicted)
-        overall_mae = mean_absolute_error(dt_results.actual_values, dt_results.pred_values)/1440  #TODO mae in days
-        baseline_mae_mean = mean_absolute_error(dt_results.actual_values, [np.mean(dt_results.actual_values)]*len(dt_results.actual_values))/1440  # mae in days
-        baseline_mae_median = mean_absolute_error(dt_results.actual_values, [np.median(dt_results.actual_values)]*len(dt_results.actual_values))/1440  # mae in days
-
-        print(f'AUC: {overall_auc}')
-        print(f'F1: {overall_f1}')
-        print(f'Model MAE: {overall_mae}')
-        print(f'Baseline MAE mean: {baseline_mae_mean}')
-        print(f'Baseline MAE median: {baseline_mae_median}')
-
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "overall_auc", overall_auc))    #TODO calculate auc!
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "overall_f1", overall_f1))    #TODO calculate F1!
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "overall_mae", overall_mae))    #TODO calculate mae!
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "baseline_mae_mean", baseline_mae_mean))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "baseline_mae_median", baseline_mae_median))
-
-        online_event_times_flat = [t for iter_online_event_times in online_event_times for t in iter_online_event_times]
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "online_time_avg", np.mean(online_event_times_flat)))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "online_time_std", np.std(online_event_times_flat)))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "offline_time_total_avg", np.mean(offline_total_times)))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "offline_time_total_std", np.std(offline_total_times)))
+    print(f'AUC: {overall_auc}')
+    print(f'Model MAE: {overall_mae}')
+    print(f'Baseline MAE: {baseline_mae_mean}')

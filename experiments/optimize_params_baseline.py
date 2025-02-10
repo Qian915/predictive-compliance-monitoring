@@ -1,31 +1,23 @@
 import EncoderFactory
 from DatasetManager import DatasetManager
 import BucketFactory
-
 import pandas as pd
 import numpy as np
-
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import StandardScaler
-
-
 import time
 import os
-import sys
 from sys import argv
 import pickle
 from collections import defaultdict
-
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
-
 from hyperopt import Trials, STATUS_OK, tpe, fmin, hp
 import hyperopt
 from hyperopt.pyll.base import scope
-from hyperopt.pyll.stochastic import sample
 
 
 def create_and_evaluate_model(args):
@@ -62,12 +54,12 @@ def create_and_evaluate_model(args):
             relevant_train_cases_bucket = dataset_manager.get_indexes(dt_train_prefixes)[bucket_assignments_train == bucket]
             relevant_test_cases_bucket = dataset_manager.get_indexes(dt_test_prefixes)[bucket_assignments_test == bucket]
             dt_test_bucket = dataset_manager.get_relevant_data_by_indexes(dt_test_prefixes, relevant_test_cases_bucket)
-            test_y = dataset_manager.get_class_label(dt_test_bucket)    #TODO for classification
+            test_y = dataset_manager.get_class_label(dt_test_bucket)    
             if len(relevant_train_cases_bucket) == 0:
                 preds = [class_ratios[cv_iter]] * len(relevant_test_cases_bucket)
             else:
                 dt_train_bucket = dataset_manager.get_relevant_data_by_indexes(dt_train_prefixes, relevant_train_cases_bucket) # one row per event
-                train_y = dataset_manager.get_class_label(dt_train_bucket)    #TODO for classification
+                train_y = dataset_manager.get_class_label(dt_train_bucket)    
                 
                 if len(set(train_y)) < 2:
                     preds = [train_y[0]] * len(relevant_test_cases_bucket)
@@ -103,9 +95,9 @@ def create_and_evaluate_model(args):
                     else:
                         pipeline = Pipeline([('encoder', feature_combiner), ('cls', cls)])
                     #pipeline.fit(dt_train_bucket, train_y)
-                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  #TODO prepare input features for model training
+                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  # prepare input features for model training
                     pipeline.fit(train_x, train_y)
-                    test_x = dt_test_bucket.drop(columns=["label", "magnitude"])  #TODO prepare input features for prediction
+                    test_x = dt_test_bucket.drop(columns=["label", "magnitude"])  # prepare input features for prediction
 
                     if cls_method == "svm":
                         preds = pipeline.decision_function(test_x)
@@ -154,7 +146,6 @@ dataset_ref_to_datasets = {
     "sepsis_cases": ["sepsis_cases_1", "sepsis_cases_2"],
     "o2c": ["o2c"],
     "bpic2012w": ["bpic2012w_1", "bpic2012w_2"],
-    "traffic_fines": ["traffic_fines_2"]    # "traffic_fines_1", 
 }
 encoding_dict = {
     "laststate": ["static", "last"],

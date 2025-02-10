@@ -1,31 +1,23 @@
 import EncoderFactory
 from DatasetManager import DatasetManager
 import BucketFactory
-
 import pandas as pd
 import numpy as np
-
 from sklearn.metrics import roc_auc_score, mean_absolute_error
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-
-
 import time
 import os
-import sys
 from sys import argv
 import pickle
 from collections import defaultdict
-
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
-
 from hyperopt import Trials, STATUS_OK, tpe, fmin, hp
 import hyperopt
 from hyperopt.pyll.base import scope
-from hyperopt.pyll.stochastic import sample
 
 
 def create_and_evaluate_model(args):
@@ -56,8 +48,6 @@ def create_and_evaluate_model(args):
         bucket_assignments_train = bucketer.fit_predict(dt_train_prefixes)
         bucket_assignments_test = bucketer.predict(dt_test_prefixes)
         
-        #preds_all = []
-        #test_y_all = []
         pred_y_class = []
         pred_y_reg = []
         test_y_class = []
@@ -68,20 +58,17 @@ def create_and_evaluate_model(args):
             relevant_train_cases_bucket = dataset_manager.get_indexes(dt_train_prefixes)[bucket_assignments_train == bucket]
             relevant_test_cases_bucket = dataset_manager.get_indexes(dt_test_prefixes)[bucket_assignments_test == bucket]
             dt_test_bucket = dataset_manager.get_relevant_data_by_indexes(dt_test_prefixes, relevant_test_cases_bucket)
-            #test_y = dataset_manager.get_class_label(dt_test_bucket)    #TODO for classification
-            test_y_values.extend(dataset_manager.get_regression_label(dt_test_bucket))   #TODO for regression
+            test_y_values.extend(dataset_manager.get_regression_label(dt_test_bucket))   # for regression
             if len(relevant_train_cases_bucket) == 0:
                 preds = [class_ratios[cv_iter]] * len(relevant_test_cases_bucket)
                 pred_y_reg.extend(preds)
             else:
                 dt_train_bucket = dataset_manager.get_relevant_data_by_indexes(dt_train_prefixes, relevant_train_cases_bucket) # one row per event
-                #train_y = dataset_manager.get_class_label(dt_train_bucket)    #TODO for classification
-                train_y_values = dataset_manager.get_regression_label(dt_train_bucket)   #TODO for regression
+                train_y_values = dataset_manager.get_regression_label(dt_train_bucket)   # for regression
                 # scale train_y within [0, 1]
                 y_scaler = MinMaxScaler()
                 train_y_reg = y_scaler.fit_transform(train_y_values.to_numpy().reshape(-1, 1)).ravel()  # normalization for regression task
             
-                
                 if len(set(train_y_reg)) < 2:
                     #preds = [train_y[0]] * len(relevant_test_cases_bucket)
                     preds = [train_y_reg[0]] * len(relevant_test_cases_bucket)
@@ -118,17 +105,17 @@ def create_and_evaluate_model(args):
                     else:
                         pipeline = Pipeline([('encoder', feature_combiner), ('scaler', StandardScaler()), ('cls', cls)])
                     #pipeline.fit(dt_train_bucket, train_y)
-                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  #TODO prepare input features for model training
+                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  # prepare input features for model training
                     pipeline.fit(train_x, train_y_reg)
-                    test_x = dt_test_bucket.drop(columns=["label", "magnitude"])  #TODO prepare input features for prediction
+                    test_x = dt_test_bucket.drop(columns=["label", "magnitude"])  # prepare input features for prediction
 
                     if cls_method == "svm":
                         preds = pipeline.decision_function(test_x)
                     else:
                         preds = pipeline.predict(test_x)
                         pred_y_reg.extend(preds)
-            pred_y_reg = np.clip(pred_y_reg, 0, 1)      #TODO clip predicted normalized values within [0,1]           
-            pred_y_values = y_scaler.inverse_transform(np.array(pred_y_reg).reshape(-1, 1)).ravel()   # TODO inverse transformation: return original value
+            pred_y_reg = np.clip(pred_y_reg, 0, 1)      # clip predicted normalized values within [0,1]           
+            pred_y_values = y_scaler.inverse_transform(np.array(pred_y_reg).reshape(-1, 1)).ravel()   # inverse transformation: return original value
             test_y_class = [1 if value > 0 else 0 for value in test_y_values]
             pred_y_class = [1 if value > 0 else 0 for value in pred_y_values]
             if "prefix" in method_name:
@@ -136,14 +123,9 @@ def create_and_evaluate_model(args):
                 if len(set(test_y_values)) == 2: 
                     auc = roc_auc_score(test_y_class, pred_y_class)
                 scores[bucket] += auc
-        #score += roc_auc_score(test_y_class, pred_y_class)
                 
         # Metrics calculation
         mae += mean_absolute_error(test_y_values, pred_y_values)/1440  # mae in days
-        #auc = roc_auc_score(test_y_class, pred_y_class)
-        # Combine metrics
-        #alpha, beta = 0.3, 0.7  # Adjust based on importance
-        #total_loss += alpha * (1 - auc) + beta * mae
     
     if "prefix" in method_name:
         for k, v in args.items():
@@ -152,10 +134,9 @@ def create_and_evaluate_model(args):
         fout_all.write("%s;%s;%s;%s;%s;%s;%s;%s\n" % (trial_nr, dataset_name, cls_method, method_name, 0, "processing_time", time.time() - start, 0))  
     else:
         for k, v in args.items():
-            fout_all.write("%s;%s;%s;%s;%s;%s;%s\n" % (trial_nr, dataset_name, cls_method, method_name, k, v, mae / n_splits))      #TODO score (score / n_splits) -> mae
+            fout_all.write("%s;%s;%s;%s;%s;%s;%s\n" % (trial_nr, dataset_name, cls_method, method_name, k, v, mae / n_splits))      
         fout_all.write("%s;%s;%s;%s;%s;%s;%s\n" % (trial_nr, dataset_name, cls_method, method_name, "processing_time", time.time() - start, 0))   
     fout_all.flush()
-    #return {'loss': -score / n_splits, 'status': STATUS_OK, 'model': cls}
     return {'loss': mae / n_splits, 'status': STATUS_OK, 'model': cls}
 
 
@@ -253,7 +234,7 @@ for dataset_name in datasets:
     if "prefix" in method_name:
         fout_all.write("%s;%s;%s;%s;%s;%s;%s;%s\n" % ("iter", "dataset", "cls", "method", "nr_events", "param", "value", "loss"))
     else:
-        fout_all.write("%s;%s;%s;%s;%s;%s;%s\n" % ("iter", "dataset", "cls", "method", "param", "value", "loss"))      #TODO score -> loss
+        fout_all.write("%s;%s;%s;%s;%s;%s;%s\n" % ("iter", "dataset", "cls", "method", "param", "value", "loss"))      
     best = fmin(create_and_evaluate_model, space, algo=tpe.suggest, max_evals=n_iter, trials=trials)
     fout_all.close()
 

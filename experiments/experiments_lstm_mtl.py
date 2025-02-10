@@ -16,12 +16,13 @@ from tensorflow.keras import Model
 from tensorflow.keras.layers import Input, Bidirectional, LSTM, Dropout, Dense, Attention, GlobalAveragePooling1D, Concatenate   #TODO use Att-Bi-LSTM
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from keras.optimizers import Adam
-from tensorflow.keras.metrics import AUC
+import tensorflow.keras.backend as K
 
 import time
 import os
 import pickle
 from sys import argv
+
 
 # Set parameters
 dataset_ref = argv[1]
@@ -49,6 +50,11 @@ random_state = 22
 os.makedirs(params_dir, exist_ok=True)
 os.makedirs(results_dir, exist_ok=True)
 cls_method = "lstm"
+
+# Define the custom masked MSE loss for the regression task
+def masked_mse(y_true, y_pred):
+    mask = K.cast(K.not_equal(y_true, 0), K.floatx())  # Mask for non-zero values
+    return K.sum(mask * K.square(y_true - y_pred)) / (K.sum(mask) + K.epsilon())
 
 for dataset_name in datasets:
     print(f"\nfor {dataset_name}:")
@@ -104,21 +110,15 @@ for dataset_name in datasets:
     def group_to_sequences(grouped_df, encoded_features, max_seq_len):
         sequences = []
         for _, group in grouped_df:
-            # Align indices with encoded features
-            group_indices = group.index  # Indices of the group in the original DataFrame
-            group_encoded = encoded_features[group_indices.to_list()]  # Get encoded rows for this group
-            
-            # If sparse, convert to dense
+            group_indices = group.index  
+            group_encoded = encoded_features[group_indices.to_list()]  
             if hasattr(group_encoded, "todense"):
                 group_encoded = group_encoded.todense()
-            
             sequences.append(group_encoded)
-        
-        # Pad sequences to ensure uniform length
+
         padded_sequences = pad_sequences(sequences, maxlen=max_seq_len, padding='post', dtype='float32')
         return padded_sequences
 
-    
     train_x = group_to_sequences(grouped_train, train_x_encoded, max_seq_len=max_prefix_length)
     test_x = group_to_sequences(grouped_test, test_x_encoded, max_seq_len=max_prefix_length)
     feature_dim = preprocessor.transform(train_features).shape[1]   # feature dimensions afer encoding
@@ -136,163 +136,60 @@ for dataset_name in datasets:
         bi_lstm_out = Dropout(rate=dropout_rate)(bi_lstm_out)
 
         # Attention Layer
-        attention_out = Attention()([bi_lstm_out, bi_lstm_out])  # Self-attention (query, key, value = bi_lstm_out)
-        attention_out = GlobalAveragePooling1D()(attention_out)  # Pooling the attention output to reduce the sequence to a single vector (for binary classification)
+        attention_out = Attention()([bi_lstm_out, bi_lstm_out])  
+        attention_out = GlobalAveragePooling1D()(attention_out)  
         dense_out = Dense(64, activation='relu')(attention_out)
-        dense_out = Dropout(rate=dense_dropout)(dense_out)
+        shared_features = Dropout(rate=dense_dropout)(dense_out)
 
-        # Output for binary classification task (sigmoid)
-        binary_output = Dense(1, activation='sigmoid', name='binary_output')(dense_out)
+        # Output for binary classification task
+        binary_dense = Dense(32, activation='relu')(shared_features)
+        binary_output = Dense(1, activation='sigmoid', name='binary_output')(shared_features)
 
-        # Output for regression task (linear for continuous values)
-        regression_concat = Concatenate()([dense_out, binary_output])
-        regression_output = Dense(1, activation='relu', name='regression_output')(regression_concat)      #TODO linear -> relu: constraint to non-negative regression output!
+        # Output for regression task
+        regression_concat = Concatenate()([shared_features, binary_dense])    # input for regression task: shared features and features derived from the classification task
+        regression_output = Dense(1, activation='relu', name='regression_output')(regression_concat)      # relu: constraint to non-negative regression output!
 
         # Define the model with the two outputs
         model = Model(inputs=input_layer, outputs=[binary_output, regression_output])
 
         return model
-    '''
-    def create_multitask_model_with_interplay(input_shape, lstm_units, dropout_rate, dense_dropout):
-        input_layer = Input(shape=input_shape)
-
-        # BiLSTM layer
-        bi_lstm_out = Bidirectional(LSTM(units=lstm_units, return_sequences=True))(input_layer)
-        bi_lstm_out = Dropout(rate=dropout_rate)(bi_lstm_out)
-
-        # Attention Layer
-        attention_out = Attention()([bi_lstm_out, bi_lstm_out])
-        attention_out = GlobalAveragePooling1D()(attention_out)
-        shared_dense = Dense(64, activation='relu')(attention_out)
-        shared_dense = Dropout(rate=dense_dropout)(shared_dense)
-
-        # Binary Classification Task
-        #binary_dense = Dense(64, activation='relu')(shared_dense)  #TODO don't separate tasks -> same architecture as the baseline
-        binary_output = Dense(1, activation='sigmoid', name='binary_output')(shared_dense)
-
-        # Regression Task: Incorporate classification output
-        regression_concat = Concatenate()([shared_dense, binary_output])
-        regression_dense = Dense(64, activation='relu')(regression_concat)
-        #regression_output = Dense(1, activation='linear', name='regression_output')(regression_dense)
-        regression_output = Dense(1, activation='relu', name='regression_output')(regression_dense)     #TODO constraint to non-negative regression output!
-
-        # Classification Task: Incorporate regression output
-        #classification_concat = Concatenate()([shared_dense, regression_output])
-        #classification_dense = Dense(64, activation='relu')(classification_concat)
-        #refined_binary_output = Dense(1, activation='sigmoid', name='refined_binary_output')(classification_dense)
-
-        model = Model(inputs=input_layer, outputs=[binary_output, regression_output])
-        return model
-    
-    # Dynamic Loss Weights
-    class DynamicLossWeights(tf.keras.layers.Layer):
-        def __init__(self):
-            super().__init__()
-            self.log_sigma1 = tf.Variable(0.0, trainable=True, dtype=tf.float32)  # Classification
-            self.log_sigma2 = tf.Variable(0.0, trainable=True, dtype=tf.float32)  # Regression
-
-        def call(self, loss1, loss2):
-            weight1 = tf.exp(-self.log_sigma1)
-            weight2 = tf.exp(-self.log_sigma2)
-            return (
-                weight1 * loss1 + self.log_sigma1 +
-                weight2 * loss2 + self.log_sigma2
-            )
-
-    # Masked Regression Loss: Apply loss only for violations
-    
-    def masked_regression_loss(y_true, y_pred, binary_output):
-        mask = tf.cast(tf.greater(binary_output, 0.5), tf.float32)  # Mask for violated cases
-        return tf.reduce_mean(mask * tf.square(y_true - y_pred))  # Only penalize for violations
-    
-    def masked_regression_loss(y_true_reg, y_pred_reg, y_true_class, y_pred_class):
-        # Mask for cases where classification is correct
-        correct_class_mask = tf.cast(tf.equal(y_true_class, tf.round(y_pred_class)), tf.float32)
-        # Mask for violation cases (binary output > 0.5)
-        violation_mask = tf.cast(tf.greater(y_pred_class, 0.5), tf.float32)
-        # Combine both masks
-        combined_mask = correct_class_mask * violation_mask
-        # Calculate masked regression loss
-        return tf.reduce_mean(combined_mask * tf.square(y_true_reg - y_pred_reg))
-    
-    # Custom loss that uses both classification and regression tasks with dynamic loss weights
-    def multitask_loss(y_true, y_pred, loss_layer):
-        # Separate classification and regression targets from y_true
-        y_true_class = y_true[0]  # Assuming y_true is a list: [classification_labels, regression_labels]
-        y_true_reg = y_true[1]
-
-        # Separate predictions for classification and regression
-        y_pred_class = y_pred[0]
-        y_pred_reg = y_pred[1]
-        
-        # Calculate classification loss (binary crossentropy)
-        classification_loss = tf.keras.losses.binary_crossentropy(y_true_class, y_pred_class)
-        
-        # Calculate regression loss with masking for violation cases
-        #regression_loss = masked_regression_loss(y_true_reg, y_pred_reg, y_pred_class)
-        regression_loss = tf.reduce_mean(tf.square(y_true_reg - y_pred_reg))    #TODO handle outliers(e.g., many small values and few large ones): regression_loss = tf.reduce_mean(tf.square(y_true_reg - y_pred_reg) / (1 + tf.abs(y_true_reg)))
-
-        # Combine both losses with dynamic uncertainty weighting
-        return loss_layer(classification_loss, regression_loss)
-    '''
     
     input_shape = (max_prefix_length, feature_dim)
     model = create_multitask_model(input_shape, lstm_units=args['lstm_units'], dropout_rate=args['dropout_rate'], dense_dropout=args['dense_dropout'])
     model.compile(optimizer=Adam(learning_rate=args['learning_rate']), 
-                  loss={'binary_output': 'binary_crossentropy', 'regression_output': 'mean_squared_error'}, 
+                  loss={
+                        'binary_output': 'binary_crossentropy', 
+                        'regression_output': masked_mse
+                  },
+                  loss_weights={
+                        'binary_output': 1.0,  # Classification loss weight
+                        'regression_output': 0.5  # Regression loss weight
+                  },
                   metrics={'binary_output': ['AUC'], 'regression_output': ['mae']})
-    #model = create_multitask_model_with_interplay(input_shape, lstm_units=args['lstm_units'], dropout_rate=args['dropout_rate'], dense_dropout=args['dense_dropout'])
-    #loss_layer = DynamicLossWeights()
-    #model.compile(
-        #optimizer=Adam(learning_rate=args['learning_rate']),
-        #loss=lambda y_true, y_pred: multitask_loss(
-        #    y_true, y_pred, loss_layer  # Pass y_true (both classification and regression labels) and y_pred
-        #),
-        #metrics={
-        #    'binary_output': ['AUC'],   #TODO decide on the output layer!
-        #    'regression_output': ['mae']
-        #}
-    #)
-    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)       #TODO define early stoppping with patience of 5 to avoid over-fitting
-    #model.summary()
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)       # define early stoppping with patience of 10 to avoid over-fitting
 
     # Train the model
     start_training_time = time.time()
     history = model.fit(
-        train_x, [train_y_class, train_y_values_scaled],  #{'refined_binary_output': train_y_class, 'regression_output': train_y_values_scaled},   #TODO modified for refined_binary_output
+        train_x, [train_y_class, train_y_values_scaled],
         validation_split=0.2,
         epochs=epochs,
         batch_size=args['batch_size'],
         verbose=0,
-        callbacks=[early_stopping]      #TODO add early stopping
+        callbacks=[early_stopping]
     )
     training_time = time.time() - start_training_time
 
     # Evaluate the model
     test_predictions = model.predict(test_x)
-    pred_y_class = test_predictions[0].round().flatten()  # Binary predictions (rounded to 0 or 1)
-    pred_y_values_scaled = test_predictions[1]  # Raw predictions (for regression)
+    pred_y_class = test_predictions[0].round().flatten()  
+    pred_y_values_scaled = test_predictions[1]
     pred_y_values = y_scaler.inverse_transform(pred_y_values_scaled)
 
     auc = roc_auc_score(test_y_class, pred_y_class)
-    f1 = f1_score(test_y_class, pred_y_class)
     mae = mean_absolute_error(test_y_values, pred_y_values)/1440
     baseline_mae = mean_absolute_error(test_y_values, np.full_like(test_y_values, np.mean(test_y_values)))/1440
-    median_mae = mean_absolute_error(test_y_values, np.full_like(test_y_values, np.median(test_y_values))) / 1440
 
     print(f"AUC: {auc:.2f}")
-    print(f"F1: {f1:.2f}")
-    print(f"MAE: {mae:.2f}")
+    print(f"Model MAE: {mae:.2f}")
     print(f'Baseline MAE: {baseline_mae:.2f}')
-    print(f'Medium MAE: {median_mae:.2f}')
-
-    # Save results
-    results_path = os.path.join(results_dir, f"{dataset_name}_mtl.csv")
-    with open(results_path, 'w') as fout:
-        fout.write(f"Dataset: {dataset_name}\n")
-        fout.write(f"Training Time: {training_time}\n")
-        fout.write(f"AUC: {auc:.2f}\n")
-        fout.write(f"F1: {f1:.2f}\n")
-        fout.write(f"MAE: {mae:.2f}\n")
-        fout.write(f'Baseline MAE: {baseline_mae:.2f}')
-        fout.write(f'Medium MAE: {median_mae:.2f}')

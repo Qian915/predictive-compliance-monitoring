@@ -1,21 +1,15 @@
 import EncoderFactory
 from DatasetManager import DatasetManager
 import BucketFactory
-
 import pandas as pd
 import numpy as np
-
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
 from sklearn.pipeline import FeatureUnion, Pipeline
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-
+from sklearn.preprocessing import StandardScaler
 import time
 import os
-import sys
 from sys import argv
 import pickle
-from collections import defaultdict
-
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
 from sklearn.linear_model import LogisticRegression
@@ -42,7 +36,6 @@ dataset_ref_to_datasets = {
     "sepsis_cases": ["sepsis_cases_1", "sepsis_cases_2"],
     "o2c": ["o2c"],
     "bpic2012w": ["bpic2012w_1", "bpic2012w_2"],
-    "traffic_fines": ["traffic_fines_2"]    # "traffic_fines_1",
 }
 
 encoding_dict = {
@@ -159,7 +152,7 @@ for dataset_name in datasets:
                 current_online_event_times.extend([0] * len(preds))
             else:
                 dt_train_bucket = dataset_manager.get_relevant_data_by_indexes(dt_train_prefixes, relevant_train_cases_bucket) # one row per event                
-                train_y_class = dataset_manager.get_class_label(dt_train_bucket)   #TODO for classification 
+                train_y_class = dataset_manager.get_class_label(dt_train_bucket)   
                 
                 if len(set(train_y_class)) < 2:
                     preds = [train_y_class[0]] * len(relevant_test_cases_bucket)
@@ -167,7 +160,7 @@ for dataset_name in datasets:
                     current_online_event_times.extend([0] * len(preds))
                     test_y_class.extend(dataset_manager.get_class_label(dt_test_bucket))
                 else:
-                    start_offline_time_fit = time.time()    # [(static, static_encoder, state, state_encoder)] for case and dynamic attributes
+                    start_offline_time_fit = time.time()    
                     feature_combiner = FeatureUnion([(method, EncoderFactory.get_encoder(method, **cls_encoder_args)) for method in methods])
 
                     if cls_method == "rf":
@@ -176,7 +169,7 @@ for dataset_name in datasets:
                                                      random_state=random_state)
 
                     elif cls_method == "xgboost":
-                        cls = xgb.XGBClassifier(objective='binary:logistic',    #TODO for binary classification!
+                        cls = xgb.XGBClassifier(objective='binary:logistic', 
                                                 n_estimators=500,
                                                 learning_rate= current_args['learning_rate'],
                                                 subsample=current_args['subsample'],
@@ -199,7 +192,7 @@ for dataset_name in datasets:
                     else:
                         pipeline = Pipeline([('encoder', feature_combiner), ('cls', cls)])
 
-                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  #TODO prepare input features for model training
+                    train_x = dt_train_bucket.drop(columns=["label", "magnitude"])  
                     pipeline.fit(train_x, train_y_class)
                     offline_time_fit += time.time() - start_offline_time_fit
 
@@ -210,7 +203,7 @@ for dataset_name in datasets:
                             
                         start = time.time()
                         _ = bucketer.predict(group)
-                        test_x = group.drop(columns=["label", "magnitude"])  #TODO prepare input features for prediction
+                        test_x = group.drop(columns=["label", "magnitude"])  
                         if cls_method == "svm":
                             pred = pipeline.decision_function(test_x)
                         else:
@@ -249,14 +242,3 @@ for dataset_name in datasets:
         overall_f1 = f1_score(dt_results.actual, dt_results.predicted)
         overall_accuracy = accuracy_score(dt_results.actual, dt_results.predicted)
         print(f'AUC: {overall_auc}')
-        print(f'F1: {overall_f1}')
-        print(f'Accuracy: {overall_accuracy}')
-   
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "overall_auc", overall_auc))    #TODO calculate auc!
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "overall_f1", overall_f1))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n" % (dataset_name, method_name, cls_method, -1, -1, "overall_f1", overall_accuracy))
-        online_event_times_flat = [t for iter_online_event_times in online_event_times for t in iter_online_event_times]
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "online_time_avg", np.mean(online_event_times_flat)))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "online_time_std", np.std(online_event_times_flat)))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "offline_time_total_avg", np.mean(offline_total_times)))
-        fout.write("%s;%s;%s;%s;%s;%s;%s\n"%(dataset_name, method_name, cls_method, -1, -1, "offline_time_total_std", np.std(offline_total_times)))

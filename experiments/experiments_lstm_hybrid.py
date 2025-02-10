@@ -5,19 +5,18 @@ import BucketFactory
 import pandas as pd
 import numpy as np
 
-from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
-from tensorflow.keras.metrics import AUC
-from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
+from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, mean_absolute_error
+from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder, MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras import Model
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Input, Bidirectional, LSTM, Dropout, Dense, Attention, GlobalAveragePooling1D
+from tensorflow.keras.layers import Input, Bidirectional, LSTM, Dropout, Dense, Attention, GlobalAveragePooling1D   #TODO use Att-Bi-LSTM
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from keras.optimizers import Adam
+from tensorflow.keras.metrics import AUC
 
 import time
 import os
@@ -57,17 +56,7 @@ for dataset_name in datasets:
     # load optimal params
     optimal_params_filename = os.path.join(params_dir, "optimal_params_%s_%s_%s.pickle" % (cls_method, dataset_name, method_name))
     if not os.path.isfile(optimal_params_filename) or os.path.getsize(optimal_params_filename) <= 0:
-        # Write to the file
-        optimal_params = {
-            'lstm_units': 75,      # modified lstm units
-            'dropout_rate': 0.25723119754776885,      # modified dropout rate
-            'dense_dropout': 0.17235501005443696,    # modified dropout rate
-            'learning_rate': 0.0097006532915159,    # Log scale for learning rate
-            'batch_size': 32      # batch size as a hyperparameter
-        }
-        with open(optimal_params_filename, "wb") as f:
-            pickle.dump(optimal_params, f)
-        #continue
+        continue
         
     with open(optimal_params_filename, "rb") as fin:
         args = pickle.load(fin)
@@ -85,8 +74,9 @@ for dataset_name in datasets:
     train, test = dataset_manager.split_data_strict(data, train_ratio, split="temporal")
     dt_train_prefixes = dataset_manager.generate_prefix_data(train, min_prefix_length, max_prefix_length, gap).reset_index(drop=True)
     dt_test_prefixes = dataset_manager.generate_prefix_data(test, min_prefix_length, max_prefix_length).reset_index(drop=True)
-    train_y = np.array(dataset_manager.get_class_label(dt_train_prefixes))  # k-prefixes
-    test_y = np.array(dataset_manager.get_class_label(dt_test_prefixes))
+    
+    train_y_values = np.array(dataset_manager.get_regression_label(dt_train_prefixes))
+    test_y_values = np.array(dataset_manager.get_regression_label(dt_test_prefixes))
 
     # Encode training and test data
     dynamic_cat_cols = dataset_manager.dynamic_cat_cols
@@ -112,27 +102,25 @@ for dataset_name in datasets:
     def group_to_sequences(grouped_df, encoded_features, max_seq_len):
         sequences = []
         for _, group in grouped_df:
-            # Align indices with encoded features
-            group_indices = group.index  # Indices of the group in the original DataFrame
-            group_encoded = encoded_features[group_indices.to_list()]  # Get encoded rows for this group
-            
-            # If sparse, convert to dense
+            group_indices = group.index  
+            group_encoded = encoded_features[group_indices.to_list()]  
             if hasattr(group_encoded, "todense"):
                 group_encoded = group_encoded.todense()
-            
             sequences.append(group_encoded)
         
-        # Pad sequences to ensure uniform length
         padded_sequences = pad_sequences(sequences, maxlen=max_seq_len, padding='post', dtype='float32')
         return padded_sequences
 
-    
     train_x = group_to_sequences(grouped_train, train_x_encoded, max_seq_len=max_prefix_length)
     test_x = group_to_sequences(grouped_test, test_x_encoded, max_seq_len=max_prefix_length)
     feature_dim = preprocessor.transform(train_features).shape[1]   # feature dimensions afer encoding
 
+    # Normalize numerical values
+    y_scaler = MinMaxScaler()
+    train_y_values_scaled = y_scaler.fit_transform(train_y_values.reshape(-1, 1))
+
     # Build the Att-Bi-LSTM model
-    def create_baseline_model(input_shape, lstm_units, dropout_rate, dense_dropout):
+    def create_hybrid_model(input_shape, lstm_units, dropout_rate, dense_dropout):
         input_layer = Input(shape=input_shape)
 
         # BiLSTM layer
@@ -140,65 +128,49 @@ for dataset_name in datasets:
         bi_lstm_out = Dropout(rate=dropout_rate)(bi_lstm_out)
 
         # Attention Layer
-        attention_out = Attention()([bi_lstm_out, bi_lstm_out])  # Self-attention (query, key, value = bi_lstm_out)
-        attention_out = GlobalAveragePooling1D()(attention_out)  # Pooling the attention output to reduce the sequence to a single vector (for binary classification)
+        attention_out = Attention()([bi_lstm_out, bi_lstm_out])  
+        attention_out = GlobalAveragePooling1D()(attention_out) 
         dense_out = Dense(64, activation='relu')(attention_out)
         dense_out = Dropout(rate=dense_dropout)(dense_out)
 
-        # Output for binary classification task (sigmoid)
-        binary_output = Dense(1, activation='sigmoid', name='binary_output')(dense_out)
+        # Output for regression task (linear for continuous values)
+        regression_output = Dense(1, activation='relu', name='regression_output')(dense_out)      # relu: constraint to non-negative regression output!
 
         # Define the model with the two outputs
-        model = Model(inputs=input_layer, outputs=binary_output)
+        model = Model(inputs=input_layer, outputs=regression_output)
 
         return model
-    '''
-    model = Sequential([
-        # Input layer: Use None for the sequence length (dynamic input shape)
-        LSTM(units=args['lstm_units'], input_shape=(max_prefix_length, feature_dim), return_sequences=False),
-        Dropout(rate=args['dropout_rate']),
-        Dense(64, activation='relu'),
-        Dropout(rate=args['dense_dropout']),
-        Dense(1, activation='sigmoid')
-    ])
     
-    model.compile(optimizer=Adam(learning_rate=args['learning_rate']), loss='binary_crossentropy', metrics=['accuracy', AUC()]) # TODO two metrics
-    '''
     input_shape = (max_prefix_length, feature_dim)
-    model = create_baseline_model(input_shape, lstm_units=args['lstm_units'], dropout_rate=args['dropout_rate'], dense_dropout=args['dense_dropout'])
-    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)       #TODO define early stoppping with patience of 10 to avoid over-fitting
+    model = create_hybrid_model(input_shape, lstm_units=args['lstm_units'], dropout_rate=args['dropout_rate'], dense_dropout=args['dense_dropout'])
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)       # define early stoppping with patience of 10 to avoid over-fitting
     model.compile(optimizer=Adam(learning_rate=args['learning_rate']), 
-                  loss='binary_crossentropy', 
-                  metrics=['AUC'])
+                  loss='mean_squared_error', 
+                  metrics=['mae'])
 
     # Train the model
     start_training_time = time.time()
     history = model.fit(
-        train_x, train_y,
+        train_x, train_y_values_scaled,   
         validation_split=0.2,
         epochs=epochs,
-        batch_size=args['batch_size'],  #TODO best batch size after hyper-params optimization
+        batch_size=args['batch_size'],  
         verbose=0,
-        callbacks=[early_stopping]      #TODO add early stopping
+        callbacks=[early_stopping]      
     )
     training_time = time.time() - start_training_time
 
     # Evaluate the model
-    test_predictions = model.predict(test_x).round().flatten()
-    dt_results = pd.DataFrame({"actual": test_y, "predicted": test_predictions})
-    dt_results.to_csv(f'truth_prediction/{dataset_name}_baseline_lstm.csv', index=False)    #TODO save resulst
+    pred_y_values_scaled = model.predict(test_x)
+    pred_y_values = y_scaler.inverse_transform(pred_y_values_scaled)
+    pred_y_class = (pred_y_values > 0).astype(int)
+    test_y_class = (test_y_values > 0).astype(int)
 
-    auc = roc_auc_score(test_y, test_predictions)
-    f1 = f1_score(test_y, test_predictions)
+    auc = roc_auc_score(test_y_class, pred_y_class)
+    mae = mean_absolute_error(test_y_values, pred_y_values)/1440
+    baseline_mae = mean_absolute_error(test_y_values, np.full_like(test_y_values, np.mean(test_y_values)))/1440
 
     print(f"AUC: {auc:.2f}")
-    print(f"F1: {f1:.2f}")
+    print(f"Model MAE: {mae:.2f}")
+    print(f'Baseline MAE: {baseline_mae:.2f}')
 
-
-    # Save results across prefixes 
-    results_path = os.path.join(results_dir, f"{dataset_name}_baseline_lstm.csv")
-    with open(results_path, 'w') as fout:
-        fout.write(f"Dataset: {dataset_name}\n")
-        fout.write(f"Training Time: {training_time}\n")
-        fout.write(f"AUC: {auc:.2f}\n")
-        fout.write(f"F1: {f1:.2f}\n")
