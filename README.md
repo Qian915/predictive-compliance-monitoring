@@ -25,6 +25,12 @@ Process training and test data sets
 python3 preprocessing/preprocess_logs_sepsis_mtl.py
 ```
 
+Optimize hyper-parameters for (baseline/hybrid/MTL) approaches with xgboost/Att-Bi-LSTM
+```
+python3 experiments/optimize_params_baseline.py "sepsis_cases" "params_baseline/" 20 "single" "agg" "xgboost"
+python3 experiments/optimize_params_lstm_baseline.py "sepsis_cases" "params_baseline/lstm/" 20 "single" "index" "lstm"
+```
+
 Predict compliance states and quantify the magnitude of violation for baseline/hybrid/MTL approaches with xgboost
 ```
 python3 experiments/experiments_baseline.py "sepsis_cases" "params_baseline/" "results_baseline/" "single" "agg" "xgboost" 1 20
