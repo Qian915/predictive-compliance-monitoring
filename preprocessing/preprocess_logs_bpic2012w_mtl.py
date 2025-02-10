@@ -40,7 +40,7 @@ def extract_timestamp_features(group):
 
     tmp = group[timestamp_col] - group[timestamp_col].iloc[-1]
     tmp = tmp.fillna(pd.Timedelta(0))  # Ensure timedelta type
-    group["timesincecasestart"] = tmp.apply(lambda x: round(float(x / np.timedelta64(1, 'm')), 2)) # m is for days with 2 decimals
+    group["timesincecasestart"] = tmp.apply(lambda x: round(float(x / np.timedelta64(1, 'm')), 2)) # m is for minutes with 2 decimals
 
     group = group.sort_values(timestamp_col, ascending=True, kind='mergesort')
     group["event_nr"] = range(1, len(group) + 1)
@@ -50,7 +50,7 @@ def extract_timestamp_features(group):
 def get_open_cases(date):
     return sum((dt_first_last_timestamps["start_time"] <= date) & (dt_first_last_timestamps["end_time"] > date))
     
-def check_if_both_exist_and_time_less_than(group, pre, suc, time_limit, counters, violation_times):  # group == trace
+def check_if_both_exist_and_time_less_than(group, pre, suc, time_limit):  # group == trace
     pre_idxs = np.where(group[activity_col] == pre)[0]
     suc_idxs = np.where(group[activity_col] == suc)[0]
     # both occur
@@ -64,33 +64,25 @@ def check_if_both_exist_and_time_less_than(group, pre, suc, time_limit, counters
                 # time satisfied
                 group[label_col] = neg_label
                 group[magnitude_col] = 0
-                counters["sat_time"] += 1
             else:
                 # time violated: calculate magnitude of violation = time_actual - time_limit
                 group[label_col] = pos_label
                 group[magnitude_col] = round(time_actual - time_limit, 2)
-                counters["vio_time"] += 1
-                violation_times["time_vio"].append(group[magnitude_col].iloc[-1])
             return group[:suc_idx]  # cut trace before suc occurs
         else:
             #TODO activity violation: suc before pre -> magnitude of violation = total time ???
             group[label_col] = pos_label
             group[magnitude_col] = round(group["timesincecasestart"].iloc[-1], 2)
-            counters["vio_act_SucPre"] += 1
-            violation_times["act_vio"].append(group[magnitude_col].iloc[-1])
             return group
     # pre is absent: vacuously satisfied
     elif len(pre_idxs) == 0:
         group[label_col] = neg_label
         group[magnitude_col] = 0
-        counters["sat_vacuously"] += 1
         return group
     #TODO pre occures but not followed by suc: activity violation -> magnitude of violation = total time ???
     else:
         group[label_col] = pos_label
         group[magnitude_col] = round(group["timesincecasestart"].iloc[-1], 2)
-        counters["vio_act_absent"] += 1
-        violation_times["act_vio"].append(group[magnitude_col].iloc[-1])
         return group
 
 def check_if_any_of_activities_exist(group, activities):
@@ -141,82 +133,12 @@ for col in cat_cols:
     data.loc[~mask, col] = "other"
     
 
-counters = {
-    "sat_time": 0,
-    "sat_vacuously": 0,
-    "vio_time": 0,
-    "vio_act_SucPre": 0,
-    "vio_act_absent": 0
-}
-violation_times = {
-    "act_vio": [],
-    "time_vio": []
-}
-
-'''
 # first labeling
-dt_time_calculated = data.sort_values(timestamp_col, ascending=True, kind="mergesort").groupby(case_id_col).apply(check_if_both_exist_and_time_less_than, pre="W_Valideren aanvraag-SCHEDULE", suc="W_Valideren aanvraag-START", time_limit=10080, counters=counters, violation_times=violation_times)    # max: 7d -> 10080m
+dt_time_calculated = data.sort_values(timestamp_col, ascending=True, kind="mergesort").groupby(case_id_col).apply(check_if_both_exist_and_time_less_than, pre="W_Valideren aanvraag-SCHEDULE", suc="W_Valideren aanvraag-START", time_limit=10080)    # max: 7d -> 10080m
 dt_time_calculated = dt_time_calculated.reset_index(drop=True)
 dt_time_calculated.to_csv(os.path.join(output_data_folder, "bpic2012w_1.csv"), sep=",", index=False)
-print(f'### bpic2012w_1 ###')
 
-'''
 # second labeling
-dt_time_calculated = data.sort_values(timestamp_col, ascending=True, kind="mergesort").groupby(case_id_col).apply(check_if_both_exist_and_time_less_than, pre="W_Valideren aanvraag-START", suc="W_Valideren aanvraag-COMPLETE", time_limit=60, counters=counters, violation_times=violation_times)    # max: 1h -> 60m
+dt_time_calculated = data.sort_values(timestamp_col, ascending=True, kind="mergesort").groupby(case_id_col).apply(check_if_both_exist_and_time_less_than, pre="W_Valideren aanvraag-START", suc="W_Valideren aanvraag-COMPLETE", time_limit=60)    # max: 1h -> 60m
 dt_time_calculated = dt_time_calculated.reset_index(drop=True)
 dt_time_calculated.to_csv(os.path.join(output_data_folder, "bpic2012w_2.csv"), sep=",", index=False)
-print(f'### bpic2012w_2 ###')
-
-
-### characteristics of processed data ###
-n_traces = dt_time_calculated[case_id_col].nunique()
-n_events = dt_time_calculated[activity_col].shape[0]
-event_classes = dt_time_calculated[activity_col].nunique()
-
-case_lengths = []
-unique_cases = dt_time_calculated[case_id_col].unique()
-for _, case in enumerate(unique_cases):
-    trace = dt_time_calculated[dt_time_calculated[case_id_col] == case].copy()
-    case_length = trace.shape[0]
-    case_lengths.append(case_length)
-min_length = min(case_lengths)
-median_length = median(case_lengths)
-max_length = max(case_lengths)
-average_length = mean(case_lengths)
-
-print("#traces:", n_traces)
-#print("#events", n_events)
-print("#event_classes:", event_classes)
-print("Min Length:", min_length)
-print("Median Length:", median_length)
-print("Average Length:", average_length)
-print("Max Length:", max_length)
-
-print(counters)
-total_sat = counters["sat_time"] + counters["sat_vacuously"]
-total_vio = counters["vio_time"] + counters["vio_act_SucPre"] + counters["vio_act_absent"]
-total_cases = total_sat + total_vio
-pos_class_ratio = round(total_vio / total_cases, 2)
-act_vio_ratio = round((counters["vio_act_SucPre"] + counters["vio_act_absent"]) / total_vio, 2)
-#print(f'#total sat: {total_sat}')
-#print(f'#total vio: {total_vio}')
-#print(f'#total cases: {total_cases}') 
-print(f'positive class ratio: {pos_class_ratio}')
-print(f'act_vio_ratio: {act_vio_ratio}')
-
-if violation_times["act_vio"]:  
-    mean_time = np.mean(violation_times["act_vio"])
-    median_time = np.median(violation_times["act_vio"])
-    min_time = np.min(violation_times["act_vio"])
-    max_time = np.max(violation_times["act_vio"])
-else:
-    mean_time = median_time = min_time = max_time = None
-print(f'activity_violation: min({min_time}), avg.({mean_time}), median({median_time}), max({max_time})')
-if violation_times["time_vio"]:  
-    mean_time = np.mean(violation_times["time_vio"])
-    median_time = np.median(violation_times["time_vio"])
-    min_time = np.min(violation_times["time_vio"])
-    max_time = np.max(violation_times["time_vio"])
-else:
-    mean_time = median_time = min_time = max_time = None
-print(f'time_violation: min({min_time}), avg.({mean_time}), median({median_time}), max({max_time})')
