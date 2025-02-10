@@ -45,7 +45,7 @@ def extract_timestamp_features(group):
 
     tmp = group[timestamp_col] - group[timestamp_col].iloc[-1]
     tmp = tmp.fillna(pd.Timedelta(0))  # Ensure timedelta type
-    group["timesincecasestart"] = tmp.apply(lambda x: round(float(x / np.timedelta64(1, 'm')), 2)) # m is for days with 2 decimals
+    group["timesincecasestart"] = tmp.apply(lambda x: round(float(x / np.timedelta64(1, 'm')), 2)) # m is for minutes with 2 decimals
 
     group = group.sort_values(timestamp_col, ascending=True, kind='mergesort')
     group["event_nr"] = range(1, len(group) + 1)
@@ -75,7 +75,7 @@ def check_if_both_exist_and_time_less_than(group, pre, suc, time_limit):  # grou
                 group[magnitude_col] = round(time_actual - time_limit, 2)
             return group[:suc_idx]  # cut trace before suc occurs
         else:
-            #TODO activity violation: suc before pre -> magnitude of violation = total time ???
+            # activity violation: suc before pre -> magnitude of violation = case duration
             group[label_col] = pos_label
             group[magnitude_col] = round(group["timesincecasestart"].iloc[-1], 2)
             return group
@@ -84,7 +84,7 @@ def check_if_both_exist_and_time_less_than(group, pre, suc, time_limit):  # grou
         group[label_col] = neg_label
         group[magnitude_col] = 0
         return group
-    #TODO pre occures but not followed by suc: activity violation -> magnitude of violation = total time ???
+    # pre occures but not followed by suc: activity violation -> magnitude of violation = case duration
     else:
         group[label_col] = pos_label
         group[magnitude_col] = round(group["timesincecasestart"].iloc[-1], 2)
