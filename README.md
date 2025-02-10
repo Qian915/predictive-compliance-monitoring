@@ -1,7 +1,7 @@
 # Predictive Compliance Monitoring
 
 ## Description
-Code accompanying the paper Quantifying The Degree Of Process Compliance: Predictive Compliance Monitoring Approaches
+Code accompanying the paper Quantifying The Magnitude Of Violation: Predictive Compliance Monitoring Approaches
 
 ## Getting started
 
